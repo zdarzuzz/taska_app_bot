@@ -44,13 +44,20 @@ async function refreshServer(){
   var tasks=(result.tasks||[]).map(function(t){return {id:t.id,owner:t.owner_id,title:t.title,desc:t.description,cat:t.category,budget:t.budget||'',deadline:t.deadline||'',terms:t.acceptance_terms||'',mat:t.materials||'',status:t.status,chosen:t.executor_id||null,responses:[],reserved:false,result:null,proposal:null}});
   (result.applications||[]).forEach(function(a){var t=tasks.find(function(t){return t.id===a.task_id});if(t)t.responses.push({id:a.id,studentId:a.student_id,message:a.message,link:a.portfolio_link||'',status:a.status,time:a.created_at})});
   S.me=me;S.users=users;S.tasks=tasks;
+  var conv=new Map((result.conversations||[]).map(function(c){return [c.id,c]}));
+  S.msgs=(result.messages||[]).slice().reverse().filter(function(m){return conv.has(m.conversation_id)}).map(function(m){var c=conv.get(m.conversation_id);return {id:m.id,tid:c.task_id,sid:c.student_id,from:m.sender_id,text:m.body,time:new Date(m.created_at).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}});
+  S.notifs=(result.notifications||[]).map(function(n){return {id:n.id,tid:n.task_id,text:n.message,read:!!n.read_at,time:new Date(n.created_at).toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}});
+  S.telegramNotifications=!!result.telegram_notifications_enabled;
 }
 async function serverAction(fn){
   if(busy)return;
   busy=true;
-  var buttons=Array.from(document.querySelectorAll('#app form button, #app nav button, #app .role-switch'));
+  var buttons=Array.from(document.querySelectorAll('#app form button, #app nav button, #app .role-switch')).filter(function(b){return !b.disabled});
   buttons.forEach(function(b){b.disabled=true});
   try{await fn()}catch(e){toast(e.message||'Не удалось сохранить. Повторите попытку.')}finally{busy=false;buttons.forEach(function(b){b.disabled=false})}
+}
+function workflow(id,action,applicationId){
+  serverAction(async function(){await window.taskaTelegram.api('workflow',{task_id:id,action:action,application_id:applicationId||null});await refreshServer();ui={};render(true);toast({choose:'Предложение отправлено',reject:'Отклик отклонён',confirm:'Готовность подтверждена',decline:'Предложение отклонено',start:'Работа началась'}[action]||'Статус обновлён')});
 }
 
 /* ---------- status ---------- */
@@ -117,11 +124,10 @@ function taskBody(t){
   +'<details class="disclosure"><summary>Условия приёмки и материалы</summary><div class="disclosure-body"><h4>Как примут работу</h4><p class="pre">'+esc(t.terms||'Не указано')+'</p>'+(t.mat?'<h4>Материалы</h4><p>'+esc(t.mat)+'</p>':'')+'</div></details>';
 }
 function chat(t,sid){
-  if(remote)return '<p class="muted small">Переписка в приложении появится после подключения чата.</p>';
   var me=meId(),other=me===t.owner?sid:t.owner;
   var ms=S.msgs.filter(function(m){return m.tid===t.id&&m.sid===sid});
-  return '<details class="disclosure chat-disclosure"'+(ui.chatExpanded?' open':'')+'><summary>Переписка с '+esc(U(other).name)+(ms.length?' <span class="count">'+ms.length+'</span>':'')+'</summary><div class="disclosure-body"><div class="msgs">'+(ms.length?ms.map(function(m){return '<div class="m'+(m.from===me?' me':'')+'"><p>'+esc(m.text)+'</p><small>'+m.time+'</small></div>'}).join(''):'<p class="muted small">Сообщений пока нет</p>')+'</div>'
-  +'<form id="f-chat" class="chatf" data-tid="'+t.id+'" data-sid="'+sid+'"><input type="text" id="chat-in" required placeholder="Ваше сообщение" autocomplete="off" aria-label="Сообщение"><button class="btn primary sm" aria-label="Отправить сообщение">➤</button></form></div></details>';
+  return '<details class="disclosure chat-disclosure"'+(ui.chatExpanded?' open':'')+'><summary>Переписка с '+esc(U(other).name)+(ms.length?' <span class="count">'+ms.length+'</span>':'')+'</summary><div class="disclosure-body"><div class="msgs">'+(ms.length?ms.map(function(m){return '<div class="m'+(m.from===me?' me':'')+'"><p>'+esc(m.text)+'</p><small>'+esc(m.time)+'</small></div>'}).join(''):'<p class="muted small">Сообщений пока нет</p>')+'</div>'
+  +'<form id="f-chat" class="chatf" data-tid="'+t.id+'" data-sid="'+sid+'"><input type="text" id="chat-in" maxlength="5000" required placeholder="Ваше сообщение" autocomplete="off" aria-label="Сообщение"><button class="btn primary sm" aria-label="Отправить сообщение">➤</button></form></div></details>';
 }
 function supportBox(t){return '';}
 function rateForm(t,whom){
@@ -147,7 +153,7 @@ function authScreen(){
  +'<details class="disclosure intro-how"><summary>Как работает TASCA?</summary><div class="disclosure-body"><ol class="simple-steps"><li>Заказчик публикует задачу</li><li>Студент откликается</li><li>Заказчик выбирает исполнителя</li><li>Результат проверяют и завершают работу</li></ol></div></details></main>';
 }
 function shell(){
-  var me=meId(),unread=S.notifs.filter(function(n){return n.to===me&&!n.read}).length,v=S.view.n;
+  var me=meId(),unread=S.notifs.filter(function(n){return (remote||n.to===me)&&!n.read}).length,v=S.view.n;
   var tabs=S.role==='student'?[['feed','Лента','⌕'],['my','Мои','▣'],['notifs','События','♧'],['profile','Профиль','◯']]:[['my','Задачи','▣'],['create','Создать','＋'],['notifs','События','♧'],['profile','Профиль','◯']];
   var cur=v==='task'?(S.role==='student'?(S.prev&&S.prev.n==='my'?'my':'feed'):'my'):v;
   return '<header class="top"><div class="wrap bar"><button class="logo" data-a="home" aria-label="На главную">ТАСКА <span class="logo-mark">✳</span></button><button class="role-switch" data-a="switch" aria-label="Сменить роль">'+(S.role==='student'?'Студент':'Заказчик')+' <span>⌄</span></button></div></header>'
@@ -208,8 +214,8 @@ function myScreen(){
  return h+'<div class="task-list">'+my.map(function(t){var hint=cHint(t);return '<article class="my-card" data-a="go" data-x="task" data-id="'+t.id+'" role="button" tabindex="0"><div class="my-top">'+pill(ST[t.status])+'<strong>'+(t.budget?rub(t.budget):'—')+'</strong></div><h3>'+esc(t.title||'Новая задача')+'</h3>'+(hint?'<span class="next-step">'+esc(hint)+'</span>':'<span class="muted small">до '+(t.deadline?fmt(t.deadline):'—')+'</span>')+'<span class="job-arrow" aria-hidden="true">↗</span></article>'}).join('')+'</div>';
 }
 function notifScreen(){
- var me=meId(),ns=S.notifs.filter(function(n){return n.to===me});
- var h='<div class="page-heading"><span class="eyebrow-in">ОБНОВЛЕНИЯ</span><h1>События</h1></div><div class="telegram-notice"><div><b>Уведомления в Telegram</b><p>Разрешите боту писать в чат. Доставка сообщений пока недоступна.</p></div><button class="btn sm" data-a="tg-permission">Разрешить</button></div>'+(ns.some(function(n){return !n.read})?'<button class="text-button" data-a="readall">Отметить всё прочитанным</button>':'');
+ var me=meId(),ns=S.notifs.filter(function(n){return remote||n.to===me});
+ var h='<div class="page-heading"><span class="eyebrow-in">ОБНОВЛЕНИЯ</span><h1>События</h1></div><div class="telegram-notice"><div><b>Уведомления в Telegram</b><p>'+(S.telegramNotifications?'Включены. Бот будет сообщать о новых откликах, сообщениях и статусах.':'Получайте уведомления от бота, даже когда приложение закрыто.')+'</p></div><button class="btn sm" data-a="tg-permission">'+(S.telegramNotifications?'Отключить':'Включить')+'</button></div>'+(ns.some(function(n){return !n.read})?'<button class="text-button" data-a="readall">Отметить всё прочитанным</button>':'');
  if(!ns.length)return h+'<div class="empty-quiet"><span>♧</span><h3>Пока событий нет</h3><p>Здесь появятся новости по вашим заданиям</p></div>';
  return h+'<div class="notifications">'+ns.map(function(n){return '<article class="notification'+(n.read?'':' unread')+'" data-a="open-n" data-id="'+n.id+'" role="button" tabindex="0"><span class="notification-dot"></span><div>'+esc(n.text)+'<small>'+n.time+'</small></div><span>›</span></article>'}).join('')+'</div>';
 }
@@ -312,7 +318,7 @@ function render(fresh){
   var o=fresh?null:snap();
   document.body.dataset.role=S.role||'student';
   $('app').innerHTML=S.role?shell():authScreen();
-  if(remote){document.querySelectorAll('[data-a="choose"],[data-a="rej"],[data-a="chat-open"],[data-a="s-confirm"],[data-a="s-decline"],[data-a="rev-on"],[data-a="scope-on"],[data-a="accept"],[data-a="pay"],[data-a="prop"]').forEach(function(b){b.disabled=true;b.title='Скоро будет доступно'});}
+  if(remote){document.querySelectorAll('[data-a="rev-on"],[data-a="scope-on"],[data-a="accept"],[data-a="pay"],[data-a="prop"],#f-submit button,#f-rate button').forEach(function(b){b.disabled=true;b.title='Скоро будет доступно'});}
   window.taskaTelegram?.syncBack(Boolean(S.role&&document.querySelector('#app [data-a="back"]')));
   if(o)restore(o);
   var nextMain=document.querySelector('#app .app-content');if(nextMain)nextMain.scrollTop=scroll;
@@ -335,9 +341,9 @@ function v(id){var e=$(id);return e?e.value:''}
 /* ---------- actions ---------- */
 var H={
   'quick-dir':function(id,x){S.filters.dir=x||'';render(true)},
-  'tg-permission':function(){if(!window.taskaTelegram){toast('Откройте приложение из чата Telegram');return}window.taskaTelegram.requestNotifications(function(ok){toast(ok?'Разрешение получено. Сервер ещё не подключён.':'Разрешение не получено')})},
+  'tg-permission':function(){if(!remote){toast('Откройте приложение из чата Telegram');return}if(S.telegramNotifications){serverAction(async function(){await window.taskaTelegram.api('notifications.settings',{enabled:false});await refreshServer();render(true);toast('Уведомления отключены')});return}window.taskaTelegram.requestNotifications(function(ok){if(!ok){toast('Разрешение не получено');return}serverAction(async function(){await window.taskaTelegram.api('notifications.settings',{enabled:true});await refreshServer();render(true);toast('Уведомления включены')})})},
   home:function(){var target=S.role==='student'?'feed':'my';if(remote){serverAction(async function(){await refreshServer();go({n:target})});return}go({n:target})},
-  go:function(id,x){if(x==='create'&&!id)id=newDraft();if(remote&&['feed','my','task'].includes(x)){serverAction(async function(){await refreshServer();go({n:x,id:id})});return}go({n:x,id:id})},
+  go:function(id,x){if(x==='create'&&!id)id=newDraft();if(remote&&['feed','my','task','notifs'].includes(x)){serverAction(async function(){await refreshServer();go({n:x,id:id})});return}go({n:x,id:id})},
   back:function(){var p=S.prev;go(p&&p.n!=='task'&&p.n!=='auth'?p:(S.role==='student'?{n:'feed'}:{n:'my'}))},
   'switch':function(){
     var tgt=S.role==='student'?'customer':'student';
@@ -350,18 +356,18 @@ var H={
   undismiss:function(){S.dismissed=[];render(true)},
   'resp-on':function(){ui.respond=true;render()},
   'chat-open':function(id,x){ui.chat=x;ui.chatExpanded=true;render()},
-  choose:function(id,x){var t=task(id),r=t.responses.filter(function(r){return r.id===x})[0];doChoose(t,r);ui={};render(true);toast('Предложение отправлено студенту')},
-  rej:function(id,x){var t=task(id),r=t.responses.filter(function(r){return r.id===x})[0];r.status='rejected';notify(r.studentId,'Заказчик отклонил отклик: «'+t.title+'»',t.id);ui.chat=null;render();toast('Отклик отклонён')},
-  's-confirm':function(id){var t=task(id);doConfirm(t);render(true);toast('Готовность подтверждена')},
-  's-decline':function(id){var t=task(id);doDecline(t);if(S.role==='student')go({n:'feed'});else render(true)},
+  choose:function(id,x){if(remote){workflow(id,'choose',x);return}var t=task(id),r=t.responses.filter(function(r){return r.id===x})[0];doChoose(t,r);ui={};render(true);toast('Предложение отправлено студенту')},
+  rej:function(id,x){if(remote){workflow(id,'reject',x);return}var t=task(id),r=t.responses.filter(function(r){return r.id===x})[0];r.status='rejected';notify(r.studentId,'Заказчик отклонил отклик: «'+t.title+'»',t.id);ui.chat=null;render();toast('Отклик отклонён')},
+  's-confirm':function(id){if(remote){workflow(id,'confirm');return}var t=task(id);doConfirm(t);render(true);toast('Готовность подтверждена')},
+  's-decline':function(id){if(remote){workflow(id,'decline');return}var t=task(id);doDecline(t);if(S.role==='student')go({n:'feed'});else render(true)},
   'rev-on':function(){ui.rev=true;render()},
   'scope-on':function(){ui.scope=true;render()},
   accept:function(id){doAccept(task(id));ui={};render(true);toast('Работа принята')},
   pay:function(id){doPay(task(id));ui={};render(true);toast('Оплата подтверждена')},
   prop:function(id,x){doAnswer(task(id),x==='1');render(true)},
   star:function(id,x){ui.rating=Number(x);render()},
-  readall:function(){S.notifs.forEach(function(n){if(n.to===meId())n.read=true});render(true)},
-  'open-n':function(id){var n=S.notifs.filter(function(n){return n.id===id})[0];if(n){n.read=true;if(n.tid&&task(n.tid))go({n:'task',id:n.tid});else render(true)}},
+  readall:function(){if(remote){serverAction(async function(){await window.taskaTelegram.api('notifications.read');await refreshServer();render(true)});return}S.notifs.forEach(function(n){if(n.to===meId())n.read=true});render(true)},
+  'open-n':function(id){var n=S.notifs.filter(function(n){return n.id===id})[0];if(!n)return;if(remote){serverAction(async function(){await window.taskaTelegram.api('notifications.read',{id:id});await refreshServer();var t=task(n.tid);if(t){S.role=t.owner===S.me.customer?'customer':'student';go({n:'task',id:t.id})}else render(true)});return}n.read=true;if(n.tid&&task(n.tid))go({n:'task',id:n.tid});else render(true)},
 };
 var F={
   'f-auth':function(){
@@ -396,6 +402,7 @@ var F={
   },
   'f-chat':function(f){
     ui.chatExpanded=true;
+    if(remote){var tid=f.dataset.tid,sid=f.dataset.sid,message=v('chat-in').trim();if(!message)return;serverAction(async function(){await window.taskaTelegram.api('chat.send',{task_id:tid,student_id:sid,sender_id:meId(),message_id:crypto.randomUUID(),message:message});await refreshServer();render(true);toast('Сообщение отправлено')});return}
     var t=task(f.dataset.tid),sid=f.dataset.sid,me=meId(),text=v('chat-in').trim();if(!text)return;
     S.msgs.push({id:uid('m'),tid:t.id,sid:sid,from:me,text:text,time:nowT()});$('chat-in').value='';
     var other=me===t.owner?sid:t.owner;
@@ -403,7 +410,7 @@ var F={
     render();
   },
   'f-submit':function(f){if(!validHttp(v('sub-link').trim())){toast('Добавьте корректную ссылку с https://');return}var t=task(f.dataset.tid);doSubmit(t,v('sub-link').trim(),v('sub-note').trim());ui={};render(true);toast('Результат отправлен на проверку')},
-  'f-start':function(f){var t=task(f.dataset.tid);doStart(t,false);ui={};render(true);toast('Работа началась')},
+  'f-start':function(f){if(remote){workflow(f.dataset.tid,'start');return}var t=task(f.dataset.tid);doStart(t,false);ui={};render(true);toast('Работа началась')},
   'f-rev':function(f){var t=task(f.dataset.tid);doRevise(t,v('rev-note').trim());ui={};render(true);toast('Правки отправлены студенту')},
   'f-scope':function(f){var t=task(f.dataset.tid);doPropose(t,Number(v('sc-b')),v('sc-d'));ui={};render(true);toast('Предложение отправлено студенту')},
   'f-rate':function(f){
@@ -416,14 +423,14 @@ var F={
 document.addEventListener('click',function(e){
   if(!S||busy)return;
   var b=e.target.closest('[data-a]');if(!b)return;
-  if(remote&&['choose','rej','chat-open','s-confirm','s-decline','rev-on','scope-on','accept','pay','prop'].includes(b.dataset.a)){e.preventDefault();return}
+  if(remote&&['rev-on','scope-on','accept','pay','prop'].includes(b.dataset.a)){e.preventDefault();return}
   var h=H[b.dataset.a];if(h){e.preventDefault();h(b.dataset.id,b.dataset.x,b)}
 });
 document.addEventListener('keydown',function(e){
   if((e.key==='Enter'||e.key===' ')&&e.target.matches&&e.target.matches('[role=button][data-a]')){e.preventDefault();e.target.click()}
 });
 document.addEventListener('submit',function(e){
-  e.preventDefault();if(!S||busy)return;var f=e.target,h=F[f.id];if(remote&&!['f-auth','f-profile','f-task','f-resp'].includes(f.id)){toast('Эта функция пока не подключена');return}if(h)h(f,e);
+  e.preventDefault();if(!S||busy)return;var f=e.target,h=F[f.id];if(remote&&!['f-auth','f-profile','f-task','f-resp','f-chat','f-start'].includes(f.id)){toast('Эта функция пока не подключена');return}if(h)h(f,e);
 });
 document.addEventListener('change',function(e){
   if(e.target.name==='role'){var c=e.target.value==='customer';document.body.dataset.role=c?'customer':'student';var l=$('a-lab'),i=$('a-name');if(l)l.textContent=c?'Название компании или заказчика':'Имя и фамилия';if(i){i.placeholder=c?'Кофейня «Зерно»':'Анна Смирнова';i.autocomplete=c?'organization':'name'}}
@@ -437,6 +444,19 @@ document.addEventListener('input',function(e){
     if(t&&t.status==='draft'){readTask(t);save();var s=$('saved');if(s)s.textContent=remote?'Есть несохранённые изменения':'Черновик сохранён в '+nowT()}
   }
 });
+
+// Refresh active conversations and notifications without interrupting typing.
+document.addEventListener('toggle',function(e){if(e.target.matches?.('.chat-disclosure'))ui.chatExpanded=e.target.open},true);
+if(remote)setInterval(async function(){
+  if(!S||!S.role||busy||document.hidden||!['task','notifs'].includes(S.view.n))return;
+  if(document.activeElement?.matches('input,textarea,select'))return;
+  busy=true;
+  try{
+    var previous=JSON.stringify([S.tasks,S.msgs,S.notifs]);
+    await refreshServer();
+    if(previous!==JSON.stringify([S.tasks,S.msgs,S.notifs]))render(false);
+  }catch(_){/* Next explicit action reports errors. */}finally{busy=false}
+},8000);
 
 async function start(){
   if(!window.taskaTelegram){render(true);return}
