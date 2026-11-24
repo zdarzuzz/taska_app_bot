@@ -44,6 +44,10 @@ async function refreshServer(){
   var tasks=(result.tasks||[]).map(function(t){return {id:t.id,owner:t.owner_id,title:t.title,desc:t.description,cat:t.category,budget:t.budget||'',deadline:t.deadline||'',terms:t.acceptance_terms||'',mat:t.materials||'',status:t.status,chosen:t.executor_id||null,responses:[],reserved:false,result:null,proposal:null}});
   (result.applications||[]).forEach(function(a){var t=tasks.find(function(t){return t.id===a.task_id});if(t)t.responses.push({id:a.id,studentId:a.student_id,message:a.message,link:a.portfolio_link||'',status:a.status,time:a.created_at})});
   S.me=me;S.users=users;S.tasks=tasks;
+  (result.tasks||[]).forEach(function(row){var t=task(row.id);if(t){t.revisionNote=row.revision_note;t.reject=row.moderation_note?[row.moderation_note]:[];t.paymentReported=!!row.payment_reported_at;t.paymentConfirmed=!!row.payment_confirmed_at}});
+  (result.submissions||[]).forEach(function(r){var t=task(r.task_id);if(t&&(!t.result||r.version>t.result.v))t.result={link:r.result_url,comment:r.comment,v:r.version}});
+  (result.reviews||[]).forEach(function(r){var t=task(r.task_id),rev={rating:r.rating,text:r.comment,from:U(r.author_id).name,task:t?t.title:''};if(users[r.recipient_id])users[r.recipient_id].reviews.push(rev);if(t){if(r.author_id===t.owner)t.studentRated=rev;else if(r.author_id===t.chosen)t.customerRated=rev}});
+  S.isModerator=!!result.is_moderator;
   var conv=new Map((result.conversations||[]).map(function(c){return [c.id,c]}));
   S.msgs=(result.messages||[]).slice().reverse().filter(function(m){return conv.has(m.conversation_id)}).map(function(m){var c=conv.get(m.conversation_id);return {id:m.id,tid:c.task_id,sid:c.student_id,from:m.sender_id,text:m.body,time:new Date(m.created_at).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}});
   S.notifs=(result.notifications||[]).map(function(n){return {id:n.id,tid:n.task_id,text:n.message,read:!!n.read_at,time:new Date(n.created_at).toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}});
@@ -59,6 +63,7 @@ async function serverAction(fn){
 function workflow(id,action,applicationId){
   serverAction(async function(){await window.taskaTelegram.api('workflow',{task_id:id,action:action,application_id:applicationId||null});await refreshServer();ui={};render(true);toast({choose:'Предложение отправлено',reject:'Отклик отклонён',confirm:'Готовность подтверждена',decline:'Предложение отклонено',start:'Работа началась'}[action]||'Статус обновлён')});
 }
+function finish(id,action,extra){serverAction(async function(){await window.taskaTelegram.api('finish',Object.assign({task_id:id,action:action},extra||{}));await refreshServer();ui={};if(S.view.n==='moderation'){S.moderation=(await window.taskaTelegram.api('moderation.list')).tasks;render(true)}else render(true);toast('Изменения сохранены')})}
 
 /* ---------- status ---------- */
 var ST={draft:['Черновик','neutral'],moderation:['На модерации','warn'],rejected:['Не прошла модерацию','bad'],open:['Принимает отклики','ok'],offer:['Ждём подтверждения студента','warn'],confirmed:['Готово к старту','warn'],work:['В работе','role'],review:['На проверке','warn'],revision:['На доработке','bad'],accepted:['Ждёт оплаты','warn'],done:['Завершена','ok']};
@@ -155,6 +160,7 @@ function authScreen(){
 function shell(){
   var me=meId(),unread=S.notifs.filter(function(n){return (remote||n.to===me)&&!n.read}).length,v=S.view.n;
   var tabs=S.role==='student'?[['feed','Лента','⌕'],['my','Мои','▣'],['notifs','События','♧'],['profile','Профиль','◯']]:[['my','Задачи','▣'],['create','Создать','＋'],['notifs','События','♧'],['profile','Профиль','◯']];
+  if(S.isModerator)tabs.push(['moderation','Проверка','✓']);
   var cur=v==='task'?(S.role==='student'?(S.prev&&S.prev.n==='my'?'my':'feed'):'my'):v;
   return '<header class="top"><div class="wrap bar"><button class="logo" data-a="home" aria-label="На главную">ТАСКА <span class="logo-mark">✳</span></button><button class="role-switch" data-a="switch" aria-label="Сменить роль">'+(S.role==='student'?'Студент':'Заказчик')+' <span>⌄</span></button></div></header>'
   +'<main class="wrap app-content">'+screen()+'</main>'
@@ -162,6 +168,7 @@ function shell(){
 }
 function screen(){
   var v=S.view;
+  if(v.n==='moderation'&&S.isModerator)return moderationScreen();
   if(v.n==='profile')return profileScreen();
   if(v.n==='feed'&&S.role==='student')return feedScreen();
   if(v.n==='task')return taskScreen(v.id);
@@ -169,6 +176,7 @@ function screen(){
   if(v.n==='notifs')return notifScreen();
   return S.role==='student'?(v.n==='my'?myScreen():feedScreen()):myScreen();
 }
+function moderationScreen(){return '<div class="page-heading"><h1>Модерация</h1><p>Проверьте описание, условия, срок и материалы перед публикацией.</p></div>'+((S.moderation||[]).length?(S.moderation||[]).map(function(t){return '<section class="card stack"><h3>'+esc(t.title)+'</h3><p>'+esc(t.category)+' · '+rub(t.budget)+' · до '+fmt(t.deadline)+'</p><p class="pre">'+esc(t.description)+'</p><p class="muted pre">Условия: '+esc(t.acceptance_terms)+'</p><p class="muted pre">Материалы: '+esc(t.materials||'—')+'</p><button class="btn primary" data-a="mod-approve" data-id="'+t.id+'">Одобрить</button><form id="f-moderation" data-tid="'+t.id+'" class="stack"><label class="f">Причина возврата<textarea name="reason" required maxlength="2000"></textarea></label><button class="btn danger">Вернуть на доработку</button></form></section>'}).join(''):'<div class="empty-quiet">Нет задач на проверке</div>')}
 function profileScreen(){
  var u=U(meId()),st=S.role==='student',first=S.view.first;
  var h='<div class="page-heading"><span class="eyebrow-in">'+(first?'ШАГ 1 ИЗ 2':'ЛИЧНЫЙ КАБИНЕТ')+'</span><h1>'+(first?'Ваш профиль':'Профиль')+'</h1>'+(first?'<p>Добавьте главное. Остальное можно заполнить позже.</p>':'')+'</div>';
@@ -236,8 +244,8 @@ function studentTask(t){
       p+=chat(t,me)+'<form id="f-submit" class="card stack" data-tid="'+t.id+'"><h3>'+(t.status==='revision'?'Повторно отправить на проверку':'Сдача')+'</h3><label class="f">Ссылка на результат<span class="hint">Диск, Figma, GitHub или другой источник</span><input type="text" id="sub-link" required placeholder="https://"></label><label class="f">Комментарий<textarea id="sub-note" placeholder="Что сделано, что приложено"></textarea></label><div><button class="btn primary">Отправить на проверку</button></div></form>';
     }
     else if(t.status==='review'){p+=al('warn','Работа на проверке','Заказчик смотрит результат'+(t.result?' (версия '+t.result.v+')':'')+'. Вы получите подтверждение или запрос на доработку.')+chat(t,me)+supportBox(t)}
-    else if(t.status==='accepted'){p+=al('ok','Работа принята','Ждём подтверждения оплаты от заказчика.')+supportBox(t)}
-    else if(t.status==='done'){p+=al('ok','Заказчик отметил оплату: '+rub(t.budget),'Завершённая задача появилась в вашем профиле.')+(t.customerRated?al('role','Ваш отзыв отправлен',esc(t.customerRated.text)):rateForm(t,'customer'))}
+    else if(t.status==='accepted'){p+=al('ok','Работа принята',t.paymentReported?'Заказчик отметил перевод вне ТАСКИ. Подтвердите только после получения денег.':'Ждём оплаты вне приложения.')+(t.paymentReported?'<button class="btn primary" data-a="confirm-payment" data-id="'+t.id+'">Подтверждаю получение денег</button>':'')+chat(t,me)}
+    else if(t.status==='done'){p+=al('ok','Задача завершена','Получение оплаты вне ТАСКИ подтверждено участниками.')+(t.customerRated?al('role','Ваш отзыв отправлен',esc(t.customerRated.text)):rateForm(t,'customer'))}
   }else if(r){
     if(t.chosen&&r.status==='sent')p+=al('','Заказчик выбрал другого исполнителя','Эта задача больше не принимает отклики.')+'<div><button class="btn" data-a="go" data-x="feed">Продолжить поиск</button></div>';
     else if(r.status==='rejected')p+=al('bad','Заказчик отклонил отклик','Не расстраивайтесь, в ленте есть другие задачи.')+'<div><button class="btn primary" data-a="go" data-x="feed">Продолжить поиск</button></div>';
@@ -254,7 +262,7 @@ function customerTask(t){
   var h='<button class="back-link" data-a="back">← Мои задачи</button><div class="task-head"><span class="eyebrow-in">'+esc(t.cat)+'</span><h1>'+esc(t.title||'Новая задача')+'</h1>'+pill(ST[t.status])+'</div><section class="sheet stack">'+(t.status==='draft'&&!t.desc?'<p class="muted">Заполните информацию о задаче</p>':taskBody(t))+'</section>';
   var p='',st=t.status,chosenU=t.chosen?U(t.chosen):null;
   if(st==='draft')p+='<div><button class="btn primary" data-a="go" data-x="create" data-id="'+t.id+'">Продолжить редактирование</button></div>';
-  if(st==='moderation')p+=al('warn','Проверяем задачу','Модерация обычно занимает несколько секунд. После одобрения задача появится в ленте.');
+  if(st==='moderation')p+=al('warn','Проверяем задачу','После одобрения модератором задача появится в ленте.');
   if(st==='rejected')p+=al('bad','Задача не прошла модерацию','<ul>'+(t.reject||[]).map(function(x){return '<li>'+esc(x)+'</li>'}).join('')+'</ul>')+'<div><button class="btn primary" data-a="go" data-x="create" data-id="'+t.id+'">Исправить задачу</button></div>';
   if(st==='open'){
     if(t.declinedNote)p+=al('warn',esc(t.declinedNote)+' отказался от предложения','Выберите другого кандидата из откликов.');
@@ -280,19 +288,19 @@ function customerTask(t){
       if(ui.rev)p+='<form id="f-rev" class="card stack" data-tid="'+t.id+'"><h3>Описать доработки</h3><label class="f">Что исправить<span class="hint">В рамках ТЗ</span><textarea id="rev-note" required></textarea></label><div><button class="btn primary">Отправить студенту</button></div></form>';
     }
     p+=proposalBox(t,'customer');
-    if(!P)p+='<div><button class="btn sm" data-a="scope-on">Изменился объём задачи</button></div>';
+    if(!P&&!remote)p+='<div><button class="btn sm" data-a="scope-on">Изменился объём задачи</button></div>';
     if(ui.scope&&!P)p+='<form id="f-scope" class="card stack" data-tid="'+t.id+'"><h3>Согласовать новую стоимость и сроки</h3><div class="two"><label class="f">Бюджет, ₽<input type="number" id="sc-b" required min="500" step="100" value="'+t.budget+'"></label><label class="f">Дедлайн<input type="date" id="sc-d" required min="'+day(1)+'" value="'+(t.deadline>day(0)?t.deadline:day(3))+'"></label></div><div><button class="btn primary">Предложить студенту</button></div></form>';
     p+=chat(t,t.chosen);
   }
-  if(st==='accepted')p+=al('ok','Работа принята','Согласуйте оплату с исполнителем.')+'<div class="card stack"><h3>Оплата и завершение</h3><p>Сумма: '+rub(t.budget)+'. Отметьте оплату только после фактического перевода вне приложения.</p><button class="btn primary" data-a="pay" data-id="'+t.id+'">Отметить выполненную оплату</button></div>';
-  if(st==='done')p+=al('ok','Задача завершена','Заказчик отметил оплату вне приложения.')+(t.studentRated?al('role','Ваш отзыв опубликован',esc(t.studentRated.text)+'<br><span class="muted small">Он виден в профиле исполнителя.</span>'):rateForm(t,'student'));
+  if(st==='accepted')p+=al('ok','Работа принята','Согласуйте оплату с исполнителем.')+'<div class="card stack"><h3>Оплата и завершение</h3><p>Сумма: '+rub(t.budget)+'. ТАСКА не принимает и не резервирует деньги.</p>'+(t.paymentReported?'<p>Ожидаем подтверждения получения исполнителем.</p>':'<button class="btn primary" data-a="pay" data-id="'+t.id+'">Отметить перевод вне ТАСКИ</button>')+'</div>'+chat(t,t.chosen);
+  if(st==='done')p+=al('ok','Задача завершена','Получение оплаты вне ТАСКИ подтверждено участниками.')+(t.studentRated?al('role','Ваш отзыв опубликован',esc(t.studentRated.text)+'<br><span class="muted small">Он виден в профиле исполнителя.</span>'):rateForm(t,'student'));
   return h+(p?'<section class="stack">'+p+'</section>':'');
 }
 function taskScreen(id){var t=task(id);if(!t)return myScreen();return S.role==='student'?studentTask(t):customerTask(t)}
 
 function createScreen(id){
  var t=task(id);if(!t)return myScreen();
- var isDraft=t.status==='draft',btn=remote?'Опубликовать задачу':'Сохранить задачу';
+ var isDraft=t.status==='draft'||t.status==='rejected',btn=remote?'Отправить на модерацию':'Сохранить задачу';
  var h='<button class="back-link" data-a="back">← Мои задачи</button><div class="page-heading"><span class="eyebrow-in">'+(isDraft?'НОВОЕ ЗАДАНИЕ':'РЕДАКТИРОВАНИЕ')+'</span><h1>'+(isDraft?'Создать задачу':'Изменить задачу')+'</h1><p>Чем точнее описание, тем проще найти исполнителя</p></div>';
  if(t.reject&&t.reject.length)h+=al('bad','Проверьте данные задачи','<ul>'+(t.reject||[]).map(function(x){return '<li>'+esc(x)+'</li>'}).join('')+'</ul>');
  h+='<form id="f-task" class="sheet stack" data-tid="'+t.id+'"><label class="f">Что нужно сделать?<input type="text" id="c-title" required value="'+esc(t.title||'')+'" placeholder="Например, дизайн презентации"></label>'
@@ -318,7 +326,7 @@ function render(fresh){
   var o=fresh?null:snap();
   document.body.dataset.role=S.role||'student';
   $('app').innerHTML=S.role?shell():authScreen();
-  if(remote){document.querySelectorAll('[data-a="rev-on"],[data-a="scope-on"],[data-a="accept"],[data-a="pay"],[data-a="prop"],#f-submit button,#f-rate button').forEach(function(b){b.disabled=true;b.title='Скоро будет доступно'});}
+  if(remote){document.querySelectorAll('[data-a="scope-on"],[data-a="prop"]').forEach(function(b){b.disabled=true;b.title='Скоро будет доступно'});}
   window.taskaTelegram?.syncBack(Boolean(S.role&&document.querySelector('#app [data-a="back"]')));
   if(o)restore(o);
   var nextMain=document.querySelector('#app .app-content');if(nextMain)nextMain.scrollTop=scroll;
@@ -343,7 +351,7 @@ var H={
   'quick-dir':function(id,x){S.filters.dir=x||'';render(true)},
   'tg-permission':function(){if(!remote){toast('Откройте приложение из чата Telegram');return}if(S.telegramNotifications){serverAction(async function(){await window.taskaTelegram.api('notifications.settings',{enabled:false});await refreshServer();render(true);toast('Уведомления отключены')});return}window.taskaTelegram.requestNotifications(function(ok){if(!ok){toast('Разрешение не получено');return}serverAction(async function(){await window.taskaTelegram.api('notifications.settings',{enabled:true});await refreshServer();render(true);toast('Уведомления включены')})})},
   home:function(){var target=S.role==='student'?'feed':'my';if(remote){serverAction(async function(){await refreshServer();go({n:target})});return}go({n:target})},
-  go:function(id,x){if(x==='create'&&!id)id=newDraft();if(remote&&['feed','my','task','notifs'].includes(x)){serverAction(async function(){await refreshServer();go({n:x,id:id})});return}go({n:x,id:id})},
+  go:function(id,x){if(x==='moderation'&&remote&&S.isModerator){serverAction(async function(){S.moderation=(await window.taskaTelegram.api('moderation.list')).tasks;go({n:x})});return}if(x==='create'&&!id)id=newDraft();if(remote&&['feed','my','task','notifs'].includes(x)){serverAction(async function(){await refreshServer();go({n:x,id:id})});return}go({n:x,id:id})},
   back:function(){var p=S.prev;go(p&&p.n!=='task'&&p.n!=='auth'?p:(S.role==='student'?{n:'feed'}:{n:'my'}))},
   'switch':function(){
     var tgt=S.role==='student'?'customer':'student';
@@ -362,8 +370,10 @@ var H={
   's-decline':function(id){if(remote){workflow(id,'decline');return}var t=task(id);doDecline(t);if(S.role==='student')go({n:'feed'});else render(true)},
   'rev-on':function(){ui.rev=true;render()},
   'scope-on':function(){ui.scope=true;render()},
-  accept:function(id){doAccept(task(id));ui={};render(true);toast('Работа принята')},
-  pay:function(id){doPay(task(id));ui={};render(true);toast('Оплата подтверждена')},
+  accept:function(id){if(remote){finish(id,'accept');return}doAccept(task(id));ui={};render(true);toast('Работа принята')},
+  pay:function(id){if(remote){if(confirm('Вы действительно перевели оплату исполнителю вне ТАСКИ?'))finish(id,'report_payment');return}doPay(task(id));ui={};render(true);toast('Оплата подтверждена')},
+  'confirm-payment':function(id){if(remote&&confirm('Деньги действительно поступили?'))finish(id,'confirm_payment')},
+  'mod-approve':function(id){if(remote&&S.isModerator)finish(id,'approve')},
   prop:function(id,x){doAnswer(task(id),x==='1');render(true)},
   star:function(id,x){ui.rating=Number(x);render()},
   readall:function(){if(remote){serverAction(async function(){await window.taskaTelegram.api('notifications.read');await refreshServer();render(true)});return}S.notifs.forEach(function(n){if(n.to===meId())n.read=true});render(true)},
@@ -390,7 +400,7 @@ var F={
   },
   'f-task':function(f,e){
     var t=task(f.dataset.tid),act=e.submitter&&e.submitter.dataset.act;readTask(t);
-    if(remote){if(act!=='draft'){var errors=checkTask(t);if(errors.length){t.reject=errors;render(true);return}}serverAction(async function(){await window.taskaTelegram.api('task.save',{id:t.id,title:t.title,desc:t.desc,cat:t.cat,budget:t.budget,deadline:t.deadline,terms:t.terms,mat:t.mat,publish:act!=='draft'});await refreshServer();toast(act==='draft'?'Черновик сохранён':'Задача опубликована');go({n:'my'})});return}
+    if(remote){if(act!=='draft'){var errors=checkTask(t);if(errors.length){t.reject=errors;render(true);return}}serverAction(async function(){await window.taskaTelegram.api('task.save',{id:t.id,title:t.title,desc:t.desc,cat:t.cat,budget:t.budget,deadline:t.deadline,terms:t.terms,mat:t.mat,publish:act!=='draft'});await refreshServer();toast(act==='draft'?'Черновик сохранён':'Задача отправлена на модерацию');go({n:'my'})});return}
     if(act==='draft'){save();toast('Черновик сохранён');return}
     var errors=checkTask(t);if(errors.length){t.status='draft';t.reject=errors;render(true);var main=document.querySelector('#app .app-content');if(main)main.scrollTop=0;return}t.status='draft';t.reject=null;save();toast('Черновик сохранён. Публикация пока недоступна.');go({n:'my'});
   },
@@ -409,11 +419,13 @@ var F={
     notify(other,U(me).name+' отправил сообщение: «'+t.title+'»',t.id);
     render();
   },
-  'f-submit':function(f){if(!validHttp(v('sub-link').trim())){toast('Добавьте корректную ссылку с https://');return}var t=task(f.dataset.tid);doSubmit(t,v('sub-link').trim(),v('sub-note').trim());ui={};render(true);toast('Результат отправлен на проверку')},
+  'f-submit':function(f){if(!validHttp(v('sub-link').trim())){toast('Добавьте корректную ссылку с https://');return}if(remote){finish(f.dataset.tid,'submit',{url:v('sub-link').trim(),text:v('sub-note').trim()});return}var t=task(f.dataset.tid);doSubmit(t,v('sub-link').trim(),v('sub-note').trim());ui={};render(true);toast('Результат отправлен на проверку')},
   'f-start':function(f){if(remote){workflow(f.dataset.tid,'start');return}var t=task(f.dataset.tid);doStart(t,false);ui={};render(true);toast('Работа началась')},
-  'f-rev':function(f){var t=task(f.dataset.tid);doRevise(t,v('rev-note').trim());ui={};render(true);toast('Правки отправлены студенту')},
+  'f-rev':function(f){if(remote){finish(f.dataset.tid,'revise',{text:v('rev-note').trim()});return}var t=task(f.dataset.tid);doRevise(t,v('rev-note').trim());ui={};render(true);toast('Правки отправлены студенту')},
+  'f-moderation':function(f){if(remote&&S.isModerator)finish(f.dataset.tid,'reject_moderation',{text:f.elements.reason.value.trim()})},
   'f-scope':function(f){var t=task(f.dataset.tid);doPropose(t,Number(v('sc-b')),v('sc-d'));ui={};render(true);toast('Предложение отправлено студенту')},
   'f-rate':function(f){
+    if(remote){finish(f.dataset.tid,'review',{rating:ui.rating||5,text:v('rate-text').trim()});return}
     var t=task(f.dataset.tid),whom=f.dataset.whom,rev={rating:ui.rating||5,text:v('rate-text').trim(),task:t.title};
     if(whom==='student'){rev.from=U(t.owner).name;U(t.chosen).reviews.push(rev);t.studentRated=rev;notify(t.chosen,'Заказчик оставил отзыв о вашей работе: «'+t.title+'»',t.id)}
     else{rev.from=U(t.chosen).name;U(t.owner).reviews.push(rev);t.customerRated=rev;notify(t.owner,'Студент оставил отзыв: «'+t.title+'»',t.id)}
@@ -423,14 +435,14 @@ var F={
 document.addEventListener('click',function(e){
   if(!S||busy)return;
   var b=e.target.closest('[data-a]');if(!b)return;
-  if(remote&&['rev-on','scope-on','accept','pay','prop'].includes(b.dataset.a)){e.preventDefault();return}
+  if(remote&&['scope-on','prop'].includes(b.dataset.a)){e.preventDefault();return}
   var h=H[b.dataset.a];if(h){e.preventDefault();h(b.dataset.id,b.dataset.x,b)}
 });
 document.addEventListener('keydown',function(e){
   if((e.key==='Enter'||e.key===' ')&&e.target.matches&&e.target.matches('[role=button][data-a]')){e.preventDefault();e.target.click()}
 });
 document.addEventListener('submit',function(e){
-  e.preventDefault();if(!S||busy)return;var f=e.target,h=F[f.id];if(remote&&!['f-auth','f-profile','f-task','f-resp','f-chat','f-start'].includes(f.id)){toast('Эта функция пока не подключена');return}if(h)h(f,e);
+  e.preventDefault();if(!S||busy)return;var f=e.target,h=F[f.id];if(remote&&!['f-auth','f-profile','f-task','f-resp','f-chat','f-start','f-submit','f-rev','f-rate','f-moderation'].includes(f.id)){toast('Эта функция пока не подключена');return}if(h)h(f,e);
 });
 document.addEventListener('change',function(e){
   if(e.target.name==='role'){var c=e.target.value==='customer';document.body.dataset.role=c?'customer':'student';var l=$('a-lab'),i=$('a-name');if(l)l.textContent=c?'Название компании или заказчика':'Имя и фамилия';if(i){i.placeholder=c?'Кофейня «Зерно»':'Анна Смирнова';i.autocomplete=c?'organization':'name'}}
