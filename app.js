@@ -25,7 +25,8 @@ function seed(){
 }
 function load(){try{var r=localStorage.getItem(KEY);if(r){var o=JSON.parse(r);if(o&&o.v===1)return o}}catch(e){}return null}
 function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
-S=load()||seed();
+// In Telegram, load account-local data only after server verification.
+S=window.taskaTelegram?null:(load()||seed());
 
 var U=function(id){return S.users[id]||{name:'—',reviews:[],skills:[],portfolio:[]}};
 var meId=function(){return S.me[S.role]};
@@ -388,6 +389,7 @@ var F={
   }
 };
 document.addEventListener('click',function(e){
+  if(!S)return;
   var b=e.target.closest('[data-a]');if(!b)return;
   var h=H[b.dataset.a];if(h){e.preventDefault();h(b.dataset.id,b.dataset.x,b)}
 });
@@ -410,6 +412,21 @@ document.addEventListener('input',function(e){
   }
 });
 
-render(true);
+async function start(){
+  if(!window.taskaTelegram){render(true);return}
+  S=null;
+  $('app').innerHTML='<main class="wrap app-content auth-gate"><div class="auth-mark">✳</div><h1>Входим в ТАСКУ</h1><p class="muted" role="status">Подтверждаем аккаунт Telegram…</p></main>';
+  try{
+    var user=await window.taskaTelegram.authenticate();
+    KEY='taska-local-07:'+user.id;
+    S=load()||seed();
+    render(true);
+  }catch(error){
+    var message=error && error.name==='AbortError'?'Сервер не ответил вовремя. Попробуйте ещё раз.':(error&&error.message||'Не удалось войти.');
+    $('app').innerHTML='<main class="wrap app-content auth-gate"><div class="auth-mark">✳</div><h1>Не удалось войти</h1><p class="muted" role="alert">'+esc(message)+'</p><button class="btn primary btn-wide" id="auth-retry">Повторить</button></main>';
+    $('auth-retry').addEventListener('click',start,{once:true});
+  }
+}
+start();
 
 })();
