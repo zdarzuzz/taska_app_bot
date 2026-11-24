@@ -18,6 +18,19 @@
   window.taskaTelegram = {
     syncBack(show) { show ? tg.BackButton.show() : tg.BackButton.hide(); },
     displayName: '',
+    async api(action, data = {}) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const res = await fetch('https://utinwfxyouyuxbjlysnp.supabase.co/functions/v1/taska-api', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({initData:tg.initData,action,data}), credentials:'omit', cache:'no-store', signal:controller.signal
+        });
+        const result = await res.json().catch(()=>({}));
+        if (!res.ok) throw new Error(res.status===401?'Закройте ТАСКУ и заново откройте её из бота.':(result.error||'Сервер недоступен. Попробуйте ещё раз.'));
+        return result;
+      } finally { clearTimeout(timeout); }
+    },
     async authenticate() {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 12000);

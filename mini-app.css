@@ -109,3 +109,4 @@ body{background:#161621;color:var(--ink)}
 #app .auth-gate h1{font-size:30px}
 #app .auth-mark{display:grid;place-items:center;width:84px;height:84px;border-radius:24px;background:var(--lemon);color:var(--navy);font-size:48px}
 #app .auth-gate .btn{max-width:360px;justify-content:center}
+#app button:disabled{opacity:.55;cursor:not-allowed;pointer-events:none}
